@@ -15,7 +15,16 @@ class PulseIQService {
     return const String.fromEnvironment("PULSEIQ_API_KEY").trim();
   }
 
-  static const projectId = "69df19cc38dc659061ae9a3d";
+  static String get projectId {
+    final fromDotEnv = dotenv.isInitialized
+        ? (dotenv.env["PULSEIQ_PROJECT_ID"] ?? "")
+        : "";
+    if (fromDotEnv.trim().isNotEmpty) return fromDotEnv.trim();
+    return const String.fromEnvironment(
+      "PULSEIQ_PROJECT_ID",
+      defaultValue: "69df59433719108df765d5ba",
+    ).trim();
+  }
   static const endpoint = "https://pulseiq-ffio.onrender.com/api/ingest/event";
 
   static Future<String> _getAnonId() async {
@@ -55,9 +64,11 @@ class PulseIQService {
         }),
       );
       if (kDebugMode) {
+        final body = response.body.trim();
         debugPrint(
           "PulseIQ track: $eventName status=${response.statusCode} "
-          "screen=${properties["screen_name"] ?? "-"}",
+          "screen=${properties["screen_name"] ?? "-"} "
+          "body=${body.isEmpty ? "-" : body}",
         );
       }
     } catch (_) {}

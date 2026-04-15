@@ -8,7 +8,9 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../config/backend_config.dart';
+import '../services/auth_service.dart';
 import '../services/pulseiq_service.dart';
+import 'auth_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
@@ -29,10 +31,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const String _autoSpeakKey = 'flowgnimag_auto_speak';
   static const String _smartReplyKey = 'flowgnimag_smart_reply';
   static const String _showWelcomeKey = 'flowgnimag_show_welcome';
-  static const String _cloudTokenKey = 'flowgnimag_cloud_token';
-  static const String _cloudRefreshTokenKey = 'flowgnimag_cloud_refresh_token';
-  static const String _cloudEmailKey = 'flowgnimag_cloud_email';
-
   bool isLoading = true;
   bool isSyncing = false;
   bool voiceEnabled = true;
@@ -86,9 +84,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       autoSpeak = prefs.getBool(_autoSpeakKey) ?? true;
       smartReply = prefs.getBool(_smartReplyKey) ?? true;
       showWelcome = prefs.getBool(_showWelcomeKey) ?? true;
-      cloudToken = prefs.getString(_cloudTokenKey) ?? '';
-      cloudRefreshToken = prefs.getString(_cloudRefreshTokenKey) ?? '';
-      cloudEmail = prefs.getString(_cloudEmailKey) ?? '';
+      cloudToken = prefs.getString(AuthService.cloudTokenKey) ?? '';
+      cloudRefreshToken =
+          prefs.getString(AuthService.cloudRefreshTokenKey) ?? '';
+      cloudEmail = prefs.getString(AuthService.cloudEmailKey) ?? '';
       isLoading = false;
     });
 
@@ -109,11 +108,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     String refreshToken = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_cloudTokenKey, token);
+    await prefs.setString(AuthService.cloudTokenKey, token);
     if (refreshToken.trim().isNotEmpty) {
-      await prefs.setString(_cloudRefreshTokenKey, refreshToken.trim());
+      await prefs.setString(
+        AuthService.cloudRefreshTokenKey,
+        refreshToken.trim(),
+      );
     }
-    await prefs.setString(_cloudEmailKey, email);
+    await prefs.setString(AuthService.cloudEmailKey, email);
     if (!mounted) return;
     setState(() {
       cloudToken = token;
@@ -178,10 +180,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } catch (_) {}
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_cloudTokenKey);
-    await prefs.remove(_cloudRefreshTokenKey);
-    await prefs.remove(_cloudEmailKey);
+    await AuthService.clearStoredSession();
     if (!mounted) return;
     setState(() {
       cloudToken = '';
@@ -208,12 +207,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       googleRecentEmails = [];
       googleContacts = [];
     });
+
+    if (!mounted) return;
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+        settings: const RouteSettings(name: 'AuthScreen'),
+        builder: (_) => AuthScreen(toggleTheme: widget.toggleTheme),
+      ),
+      (route) => false,
+    );
   }
 
   Map<String, String> get _authHeaders => {
-        "Authorization": "Bearer $cloudToken",
-        "Content-Type": "application/json",
-      };
+    "Authorization": "Bearer $cloudToken",
+    "Content-Type": "application/json",
+  };
 
   Future<bool> _refreshCloudAccessToken() async {
     final refresh = cloudRefreshToken.trim();
@@ -701,7 +710,9 @@ FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@your-project-id.iam.gserviceaccount.
 FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LINE_2\\n-----END PRIVATE KEY-----\\n
 ''';
     await Clipboard.setData(const ClipboardData(text: template));
-    showSnack("FCM env template copied. Paste into backend/.env and fill values.");
+    showSnack(
+      "FCM env template copied. Paste into backend/.env and fill values.",
+    );
   }
 
   Future<void> disconnectGoogleCalendar() async {
@@ -737,10 +748,12 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
   Future<Map<String, String>?> _openGoogleEventFormDialog({
     Map<String, dynamic>? existing,
   }) async {
-    final existingStart = DateTime.tryParse((existing?["start"] ?? "").toString())
-        ?.toLocal();
-    final existingEnd = DateTime.tryParse((existing?["end"] ?? "").toString())
-        ?.toLocal();
+    final existingStart = DateTime.tryParse(
+      (existing?["start"] ?? "").toString(),
+    )?.toLocal();
+    final existingEnd = DateTime.tryParse(
+      (existing?["end"] ?? "").toString(),
+    )?.toLocal();
     final defaultDate = existingStart != null
         ? "${existingStart.year}-${_twoDigits(existingStart.month)}-${_twoDigits(existingStart.day)}"
         : "${DateTime.now().year}-${_twoDigits(DateTime.now().month)}-${_twoDigits(DateTime.now().day)}";
@@ -762,7 +775,9 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text(existing == null ? "Create Google Event" : "Edit Google Event"),
+          title: Text(
+            existing == null ? "Create Google Event" : "Edit Google Event",
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1025,9 +1040,7 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
                         title: Text(summary),
-                        subtitle: Text(
-                          start.isEmpty ? "No start time" : start,
-                        ),
+                        subtitle: Text(start.isEmpty ? "No start time" : start),
                         trailing: Wrap(
                           spacing: 2,
                           children: [
@@ -1177,7 +1190,8 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                   separatorBuilder: (_, _) => const Divider(height: 14),
                   itemBuilder: (context, index) {
                     final item = items[index];
-                    final subject = (item["subject"] ?? "(No subject)").toString();
+                    final subject = (item["subject"] ?? "(No subject)")
+                        .toString();
                     final from = (item["from"] ?? "").toString();
                     final snippet = (item["snippet"] ?? "").toString();
                     return ListTile(
@@ -1262,11 +1276,7 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
     try {
       final response = await _authedPost(
         "/integrations/google/gmail/send",
-        body: {
-          "to": to,
-          "subject": subject,
-          "body": body,
-        },
+        body: {"to": to, "subject": subject, "body": body},
       );
       final data = response.body.isNotEmpty
           ? jsonDecode(response.body) as Map<String, dynamic>
@@ -1458,11 +1468,7 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
         if (token.isEmpty || email.isEmpty) {
           showSnack("Invalid auth response from server.");
         } else {
-          await saveCloudSession(
-            token,
-            email,
-            refreshToken: refreshToken,
-          );
+          await saveCloudSession(token, email, refreshToken: refreshToken);
           showSnack(
             isSignup ? "Cloud account created." : "Cloud login successful.",
           );
@@ -1705,34 +1711,19 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
 
   List<Map<String, dynamic>> _buildPushReleaseChecklistItems() {
     return [
-      {
-        'label': 'Cloud account connected',
-        'done': isCloudConnected,
-      },
-      {
-        'label': 'Backend FCM env configured',
-        'done': fcmConfigured,
-      },
-      {
-        'label': 'Firebase admin initialized',
-        'done': firebaseAdminReady,
-      },
+      {'label': 'Cloud account connected', 'done': isCloudConnected},
+      {'label': 'Backend FCM env configured', 'done': fcmConfigured},
+      {'label': 'Firebase admin initialized', 'done': firebaseAdminReady},
       {
         'label': 'Android Firebase file added',
         'done': androidGoogleServicesPresent,
       },
-      {
-        'label': 'iOS Firebase file added',
-        'done': iosGoogleServiceInfoPresent,
-      },
+      {'label': 'iOS Firebase file added', 'done': iosGoogleServiceInfoPresent},
       {
         'label': 'At least one device token registered',
         'done': pushDeviceCount > 0,
       },
-      {
-        'label': 'Full push self-test passed',
-        'done': _hasPushSelfTestSuccess,
-      },
+      {'label': 'Full push self-test passed', 'done': _hasPushSelfTestSuccess},
     ];
   }
 
@@ -1759,9 +1750,13 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Icon(
-                          done ? Icons.check_circle : Icons.radio_button_unchecked,
+                          done
+                              ? Icons.check_circle
+                              : Icons.radio_button_unchecked,
                           size: 18,
-                          color: done ? Colors.greenAccent : Colors.orangeAccent,
+                          color: done
+                              ? Colors.greenAccent
+                              : Colors.orangeAccent,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
@@ -1769,7 +1764,9 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                             item['label'].toString(),
                             style: TextStyle(
                               color: done ? Colors.white : Colors.white70,
-                              fontWeight: done ? FontWeight.w600 : FontWeight.w500,
+                              fontWeight: done
+                                  ? FontWeight.w600
+                                  : FontWeight.w500,
                             ),
                           ),
                         ),
@@ -2065,7 +2062,9 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
               children: [
                 ListTile(
                   leading: Icon(
-                    pushDeviceCount > 0 ? Icons.notifications_active : Icons.notifications_off,
+                    pushDeviceCount > 0
+                        ? Icons.notifications_active
+                        : Icons.notifications_off,
                     color: pushDeviceCount > 0
                         ? Colors.greenAccent
                         : Colors.orangeAccent,
@@ -2087,7 +2086,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Android config: ${androidGoogleServicesPresent ? "present" : "missing"}  |  iOS config: ${iosGoogleServiceInfoPresent ? "present" : "missing"}",
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                        ),
                       ),
                     ),
                   ),
@@ -2098,7 +2100,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Local token: $localPushTokenPreview",
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                        ),
                       ),
                     ),
                   ),
@@ -2106,8 +2111,11 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                   buildActionTile(
                     icon: Icons.task_alt_outlined,
                     title: "Open Release Checklist",
-                    subtitle: "See all push go-live tasks and completion status.",
-                    onTap: isPushLoading ? () {} : openPushReleaseChecklistDialog,
+                    subtitle:
+                        "See all push go-live tasks and completion status.",
+                    onTap: isPushLoading
+                        ? () {}
+                        : openPushReleaseChecklistDialog,
                     iconColor: Colors.lightBlueAccent,
                   ),
                 if (isCloudConnected)
@@ -2115,14 +2123,17 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                     icon: Icons.sync_rounded,
                     title: "Refresh Push Status",
                     subtitle: "Check backend/device registration state.",
-                    onTap: isPushLoading ? () {} : () => refreshPushStatus(showToast: true),
+                    onTap: isPushLoading
+                        ? () {}
+                        : () => refreshPushStatus(showToast: true),
                     iconColor: Colors.lightBlueAccent,
                   ),
                 if (isCloudConnected)
                   buildActionTile(
                     icon: Icons.notification_add_outlined,
                     title: "Send Push Test",
-                    subtitle: "Send a test notification to this account devices.",
+                    subtitle:
+                        "Send a test notification to this account devices.",
                     onTap: isPushLoading ? () {} : sendPushTestFromSettings,
                     iconColor: Colors.greenAccent,
                   ),
@@ -2146,7 +2157,8 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                   buildActionTile(
                     icon: Icons.content_copy_outlined,
                     title: "Copy FCM .env Keys",
-                    subtitle: "Copy backend Firebase env template to clipboard.",
+                    subtitle:
+                        "Copy backend Firebase env template to clipboard.",
                     onTap: isPushLoading ? () {} : copyFcmEnvTemplate,
                     iconColor: Colors.tealAccent,
                   ),
@@ -2157,7 +2169,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         pushSelfTestResult,
-                        style: const TextStyle(fontSize: 12, color: Colors.lightGreenAccent),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.lightGreenAccent,
+                        ),
                       ),
                     ),
                   ),
@@ -2168,7 +2183,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Doctor: $pushDoctorSummary",
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                        ),
                       ),
                     ),
                   ),
@@ -2179,7 +2197,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Missing: ${pushDoctorMissing.join(" | ")}",
-                        style: const TextStyle(fontSize: 12, color: Colors.orangeAccent),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.orangeAccent,
+                        ),
                       ),
                     ),
                   ),
@@ -2190,7 +2211,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Actions: ${pushDoctorActions.join(" | ")}",
-                        style: const TextStyle(fontSize: 12, color: Colors.cyanAccent),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.cyanAccent,
+                        ),
                       ),
                     ),
                   ),
@@ -2221,18 +2245,18 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                     googleConnected
                         ? "Google Calendar Connected"
                         : googleConfigured
-                            ? "Google Calendar Not Connected"
-                            : "Google Calendar Not Configured",
+                        ? "Google Calendar Not Connected"
+                        : "Google Calendar Not Configured",
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                   subtitle: Text(
                     !isCloudConnected
                         ? "Login to cloud to use calendar integration."
                         : !googleConfigured
-                            ? "Set GOOGLE_CLIENT_ID/SECRET/REDIRECT in backend .env."
-                            : googleConnected
-                                ? "Token expiry: ${googleExpiryAt.isEmpty ? "unknown" : googleExpiryAt}"
-                                : "Connect your Google account to sync events.",
+                        ? "Set GOOGLE_CLIENT_ID/SECRET/REDIRECT in backend .env."
+                        : googleConnected
+                        ? "Token expiry: ${googleExpiryAt.isEmpty ? "unknown" : googleExpiryAt}"
+                        : "Connect your Google account to sync events.",
                   ),
                 ),
                 if (isCloudConnected && googleConfigured && !googleConnected)
@@ -2268,7 +2292,9 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                     icon: Icons.add_task_outlined,
                     title: "Create Google Event",
                     subtitle: "Create a new event with date/time.",
-                    onTap: isGoogleLoading ? () {} : createGoogleEventFromSettings,
+                    onTap: isGoogleLoading
+                        ? () {}
+                        : createGoogleEventFromSettings,
                     iconColor: Colors.lightGreenAccent,
                   ),
                 if (isCloudConnected && googleConnected)
@@ -2319,7 +2345,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Profile: ${googleProfileName.isEmpty ? "-" : googleProfileName}  |  ${googleProfileEmail.isEmpty ? "-" : googleProfileEmail}",
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                        ),
                       ),
                     ),
                   ),
@@ -2330,7 +2359,10 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                       alignment: Alignment.centerLeft,
                       child: Text(
                         "Scope: $googleScope",
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                        ),
                       ),
                     ),
                   ),

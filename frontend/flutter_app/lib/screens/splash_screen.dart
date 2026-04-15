@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../services/auth_service.dart';
 import '../services/pulseiq_service.dart';
+import 'auth_screen.dart';
 import 'main_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -30,6 +32,7 @@ class _SplashScreenState extends State<SplashScreen>
   ];
 
   int currentStep = 0;
+  bool _isNavigating = false;
 
   @override
   void initState() {
@@ -68,17 +71,31 @@ class _SplashScreenState extends State<SplashScreen>
       });
     });
 
-    Future.delayed(const Duration(seconds: 4), () {
-      if (!mounted) return;
+    _bootstrap();
+  }
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          settings: const RouteSettings(name: 'MainScreen'),
-          builder: (_) => MainScreen(toggleTheme: widget.toggleTheme),
-        ),
-      );
-    });
+  Future<void> _bootstrap() async {
+    final results = await Future.wait<dynamic>([
+      Future.delayed(const Duration(milliseconds: 2600)),
+      AuthService.restoreSession(),
+    ]);
+
+    final session = results[1] as AuthSession?;
+    if (!mounted || _isNavigating) return;
+
+    _isNavigating = true;
+    final destination = session?.isValid == true
+        ? MainScreen(toggleTheme: widget.toggleTheme)
+        : AuthScreen(toggleTheme: widget.toggleTheme);
+    final routeName = session?.isValid == true ? 'MainScreen' : 'AuthScreen';
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        settings: RouteSettings(name: routeName),
+        builder: (_) => destination,
+      ),
+    );
   }
 
   @override

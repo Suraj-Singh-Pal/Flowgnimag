@@ -10,6 +10,7 @@ const Database = require("better-sqlite3");
 const { MongoClient } = require("mongodb");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { track: trackPulseIQ } = require("./utils/pulseiq");
 let firebaseAdmin = null;
 try {
   firebaseAdmin = require("firebase-admin");
@@ -5105,6 +5106,15 @@ app.post("/auth/signup", async (req, res) => {
       .get(insert.lastInsertRowid);
     const session = issueAuthSession(user, req);
 
+    trackPulseIQ("user_registered", String(user.id), {
+      email: user.email,
+      auth_method: "email_password",
+    });
+    trackPulseIQ("signup_success", String(user.id), {
+      email: user.email,
+      auth_method: "email_password",
+    });
+
     return res.status(201).json({
       success: true,
       token: session.token,
@@ -5152,6 +5162,10 @@ app.post("/auth/login", async (req, res) => {
     }
 
     const session = issueAuthSession(user, req);
+    trackPulseIQ("login_success", String(user.id), {
+      email: user.email,
+      auth_method: "email_password",
+    });
     return res.json({
       success: true,
       token: session.token,
@@ -5308,6 +5322,10 @@ app.post("/auth/refresh", (req, res) => {
 app.post("/auth/logout", requireAuth, (req, res) => {
   const refreshToken = cleanText(req.body?.refreshToken, 1200);
   const allDevices = req.body?.allDevices === true;
+
+  trackPulseIQ("logout", String(req.auth.userId), {
+    scope: allDevices ? "all_devices" : refreshToken ? "current_device" : "unknown",
+  });
 
   if (allDevices) {
     revokeUserRefreshTokens(req.auth.userId);
