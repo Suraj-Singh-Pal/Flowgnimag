@@ -2,6 +2,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class BackendConfig {
+  static bool get _isRunningOnLocalWebHost {
+    if (!kIsWeb) return false;
+    final host = Uri.base.host.trim().toLowerCase();
+    return host == 'localhost' || host == '127.0.0.1';
+  }
+
   static String get apiBaseUrl {
     final env = dotenv.isInitialized ? dotenv.env : const <String, String>{};
 
@@ -21,6 +27,12 @@ class BackendConfig {
     }
 
     if (kIsWeb) {
+      if (_isRunningOnLocalWebHost) {
+        return localWeb;
+      }
+      if (prod.isNotEmpty) {
+        return prod;
+      }
       return localWeb;
     }
 
