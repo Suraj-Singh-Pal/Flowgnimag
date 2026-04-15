@@ -1,14 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../services/pulseiq_service.dart';
 import 'main_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
 
-  const SplashScreen({
-    super.key,
-    required this.toggleTheme,
-  });
+  const SplashScreen({super.key, required this.toggleTheme});
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -37,6 +35,13 @@ class _SplashScreenState extends State<SplashScreen>
   void initState() {
     super.initState();
 
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PulseIQService.screenView(
+        'SplashScreen',
+        properties: {'trigger': 'init_state'},
+      );
+    });
+
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1800),
@@ -50,12 +55,7 @@ class _SplashScreenState extends State<SplashScreen>
     _scaleAnimation = Tween<double>(
       begin: 0.88,
       end: 1.0,
-    ).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: Curves.easeOutBack,
-      ),
-    );
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
 
     _controller.forward();
 
@@ -74,6 +74,7 @@ class _SplashScreenState extends State<SplashScreen>
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
+          settings: const RouteSettings(name: 'MainScreen'),
           builder: (_) => MainScreen(toggleTheme: widget.toggleTheme),
         ),
       );
@@ -193,10 +194,7 @@ class _SplashScreenState extends State<SplashScreen>
                       const SizedBox(height: 8),
                       const Text(
                         "Hybrid AI Assistant",
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: Colors.white70,
-                        ),
+                        style: TextStyle(fontSize: 15, color: Colors.white70),
                       ),
                       const SizedBox(height: 26),
                       Container(

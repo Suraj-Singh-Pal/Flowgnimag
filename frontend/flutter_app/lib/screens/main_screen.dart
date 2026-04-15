@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
+import '../services/pulseiq_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/glass.dart';
 import 'assistant_screen.dart';
@@ -24,6 +25,7 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int currentIndex = 0;
   int chatHistorySignal = 0;
+  int? _lastTrackedIndex;
 
   bool isOnlineMode = true;
   bool isAssistantListening = false;
@@ -41,6 +43,9 @@ class _MainScreenState extends State<MainScreen> {
     connectivitySubscription = connectivity.onConnectivityChanged.listen(
       updateConnectionStatus,
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _trackCurrentScreen('init_state');
+    });
   }
 
   Future<void> initConnectivity() async {
@@ -71,6 +76,7 @@ class _MainScreenState extends State<MainScreen> {
       currentIndex = index;
     });
 
+    _trackCurrentScreen('drawer_tab_switch');
     Navigator.of(context).maybePop();
   }
 
@@ -79,6 +85,7 @@ class _MainScreenState extends State<MainScreen> {
     setState(() {
       currentIndex = 2;
     });
+    _trackCurrentScreen('open_chat_tab');
   }
 
   void openChatHistory() {
@@ -87,6 +94,7 @@ class _MainScreenState extends State<MainScreen> {
       currentIndex = 2;
       chatHistorySignal++;
     });
+    _trackCurrentScreen('open_chat_history');
     Navigator.of(context).maybePop();
   }
 
@@ -96,6 +104,7 @@ class _MainScreenState extends State<MainScreen> {
       currentIndex = 2;
       startVoiceFromAssistant = true;
     });
+    _trackCurrentScreen('assistant_voice_command');
   }
 
   void resetVoiceTrigger() {
@@ -126,6 +135,39 @@ class _MainScreenState extends State<MainScreen> {
       default:
         return "FLOWGNIMAG";
     }
+  }
+
+  String getAnalyticsScreenName() {
+    switch (currentIndex) {
+      case 0:
+        return 'HomeScreen';
+      case 1:
+        return 'AssistantScreen';
+      case 2:
+        return 'ChatScreen';
+      case 3:
+        return 'NotesScreen';
+      case 4:
+        return 'TasksScreen';
+      case 5:
+        return 'SettingsScreen';
+      default:
+        return 'UnknownScreen';
+    }
+  }
+
+  void _trackCurrentScreen(String trigger) {
+    final screenName = getAnalyticsScreenName();
+    final previousIndex = _lastTrackedIndex;
+    _lastTrackedIndex = currentIndex;
+    PulseIQService.screenView(
+      screenName,
+      properties: {
+        'trigger': trigger,
+        'main_tab_index': currentIndex,
+        'previous_main_tab_index': previousIndex,
+      },
+    );
   }
 
   String getConnectionText() {

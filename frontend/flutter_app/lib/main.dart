@@ -78,7 +78,6 @@ class _FlowgnimagAppState extends State<FlowgnimagApp> {
       return MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: AppTheme.darkTheme(),
-        navigatorObservers: [_pulseObserver],
         home: const Scaffold(body: Center(child: CircularProgressIndicator())),
       );
     }

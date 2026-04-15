@@ -1,17 +1,20 @@
 import "dart:convert";
 import "dart:math";
+import "package:flutter/foundation.dart";
 import "package:flutter/material.dart";
 import "package:flutter_dotenv/flutter_dotenv.dart";
 import "package:http/http.dart" as http;
 import "package:shared_preferences/shared_preferences.dart";
 
 class PulseIQService {
-  // Uses frontend .env first, then optional --dart-define fallback.
   static String get apiKey {
-    final fromDotEnv = dotenv.isInitialized ? (dotenv.env["PULSEIQ_API_KEY"] ?? "") : "";
+    final fromDotEnv = dotenv.isInitialized
+        ? (dotenv.env["PULSEIQ_API_KEY"] ?? "")
+        : "";
     if (fromDotEnv.trim().isNotEmpty) return fromDotEnv.trim();
     return const String.fromEnvironment("PULSEIQ_API_KEY").trim();
   }
+
   static const projectId = "69df19cc38dc659061ae9a3d";
   static const endpoint = "https://pulseiq-ffio.onrender.com/api/ingest/event";
 
@@ -28,19 +31,21 @@ class PulseIQService {
     String eventName,
     Map<String, dynamic> properties,
   ) async {
-    if (apiKey.trim().isEmpty) return;
+    if (apiKey.trim().isEmpty) {
+      if (kDebugMode) {
+        debugPrint("PulseIQ skipped: missing PULSEIQ_API_KEY");
+      }
+      return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
     final anonId = await _getAnonId();
     final userId = prefs.getString("_piq_user");
 
     try {
-      await http.post(
+      final response = await http.post(
         Uri.parse(endpoint),
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-        },
+        headers: {"Content-Type": "application/json", "x-api-key": apiKey},
         body: jsonEncode({
           "projectId": projectId,
           "eventName": eventName,
@@ -49,6 +54,12 @@ class PulseIQService {
           "properties": properties,
         }),
       );
+      if (kDebugMode) {
+        debugPrint(
+          "PulseIQ track: $eventName status=${response.statusCode} "
+          "screen=${properties["screen_name"] ?? "-"}",
+        );
+      }
     } catch (_) {}
   }
 
@@ -64,11 +75,14 @@ class PulseIQService {
     String screenName, {
     Map<String, dynamic> properties = const {},
   }) async {
-    final props = <String, dynamic>{"screen_name": screenName, ...properties};
+    final cleanName = screenName.trim().isEmpty ? "unknown" : screenName.trim();
+    final props = <String, dynamic>{"screen_name": cleanName, ...properties};
     await track("page_view", props);
   }
 
-  static Future<void> signupClick({Map<String, dynamic> properties = const {}}) {
+  static Future<void> signupClick({
+    Map<String, dynamic> properties = const {},
+  }) {
     return track("signup_click", properties);
   }
 
