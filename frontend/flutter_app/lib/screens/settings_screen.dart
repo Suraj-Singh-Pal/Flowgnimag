@@ -37,6 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool autoSpeak = true;
   bool smartReply = true;
   bool showWelcome = true;
+  String cloudName = '';
   String cloudToken = '';
   String cloudRefreshToken = '';
   String cloudEmail = '';
@@ -84,6 +85,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       autoSpeak = prefs.getBool(_autoSpeakKey) ?? true;
       smartReply = prefs.getBool(_smartReplyKey) ?? true;
       showWelcome = prefs.getBool(_showWelcomeKey) ?? true;
+      cloudName = prefs.getString(AuthService.cloudNameKey) ?? '';
       cloudToken = prefs.getString(AuthService.cloudTokenKey) ?? '';
       cloudRefreshToken =
           prefs.getString(AuthService.cloudRefreshTokenKey) ?? '';
@@ -105,19 +107,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> saveCloudSession(
     String token,
     String email, {
+    String name = '',
     String refreshToken = '',
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(AuthService.cloudTokenKey, token);
-    if (refreshToken.trim().isNotEmpty) {
-      await prefs.setString(
-        AuthService.cloudRefreshTokenKey,
-        refreshToken.trim(),
-      );
-    }
-    await prefs.setString(AuthService.cloudEmailKey, email);
+    final existing = await AuthService.getStoredSession();
+    final resolvedName = name.trim().isNotEmpty
+        ? name.trim()
+        : existing?.name ?? '';
+    await AuthService.saveSession(
+      AuthSession(
+        token: token,
+        refreshToken: refreshToken.trim().isNotEmpty
+            ? refreshToken.trim()
+            : existing?.refreshToken ?? '',
+        email: email,
+        name: resolvedName,
+      ),
+    );
     if (!mounted) return;
     setState(() {
+      cloudName = resolvedName;
       cloudToken = token;
       if (refreshToken.trim().isNotEmpty) {
         cloudRefreshToken = refreshToken.trim();
@@ -181,8 +190,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     await AuthService.clearStoredSession();
+    await PulseIQService.clearIdentity();
     if (!mounted) return;
     setState(() {
+      cloudName = '';
       cloudToken = '';
       cloudRefreshToken = '';
       cloudEmail = '';
@@ -248,6 +259,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final nextRefresh = (data["refreshToken"] ?? "").toString().trim();
       final user = data["user"] as Map<String, dynamic>? ?? const {};
       final email = (user["email"] ?? cloudEmail).toString().trim();
+      final name = (user["name"] ?? cloudName).toString().trim();
       if (token.isEmpty || email.isEmpty) {
         return false;
       }
@@ -255,6 +267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await saveCloudSession(
         token,
         email,
+        name: name,
         refreshToken: nextRefresh.isNotEmpty ? nextRefresh : refresh,
       );
       return true;
@@ -1465,10 +1478,16 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
         final refreshToken = (data["refreshToken"] ?? "").toString();
         final user = data["user"] as Map<String, dynamic>? ?? {};
         final email = (user["email"] ?? payload["email"] ?? "").toString();
+        final name = (user["name"] ?? payload["name"] ?? "").toString();
         if (token.isEmpty || email.isEmpty) {
           showSnack("Invalid auth response from server.");
         } else {
-          await saveCloudSession(token, email, refreshToken: refreshToken);
+          await saveCloudSession(
+            token,
+            email,
+            name: name,
+            refreshToken: refreshToken,
+          );
           showSnack(
             isSignup ? "Cloud account created." : "Cloud login successful.",
           );
@@ -1998,7 +2017,7 @@ FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nYOUR_KEY_LINE_1\\nYOUR_KEY_LI
                   ),
                   subtitle: Text(
                     isCloudConnected
-                        ? "Logged in as $cloudEmail"
+                        ? "Logged in as ${cloudName.trim().isEmpty ? "Cloud User" : cloudName} • $cloudEmail"
                         : "Sign up or login to sync chats, notes, and tasks.",
                   ),
                 ),

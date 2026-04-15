@@ -25,6 +25,7 @@ class PulseIQService {
       defaultValue: "69df59433719108df765d5ba",
     ).trim();
   }
+
   static const endpoint = "https://pulseiq-ffio.onrender.com/api/ingest/event";
 
   static Future<String> _getAnonId() async {
@@ -80,6 +81,11 @@ class PulseIQService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("_piq_user", clean);
     await track("identify", {"userId": clean});
+  }
+
+  static Future<void> clearIdentity() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove("_piq_user");
   }
 
   static Future<void> screenView(

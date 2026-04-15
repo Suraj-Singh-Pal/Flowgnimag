@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../services/auth_service.dart';
 import '../services/pulseiq_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/glass.dart';
+import 'auth_screen.dart';
 import 'assistant_screen.dart';
 import 'chat_screen.dart';
 import 'home_screen.dart';
@@ -23,6 +26,7 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   int currentIndex = 0;
   int chatHistorySignal = 0;
   int? _lastTrackedIndex;
@@ -31,6 +35,8 @@ class _MainScreenState extends State<MainScreen> {
   bool isAssistantListening = false;
   bool isAssistantSpeaking = false;
   bool startVoiceFromAssistant = false;
+  bool isExitProcessing = false;
+  AuthSession? currentSession;
 
   late final Connectivity connectivity;
   StreamSubscription<List<ConnectivityResult>>? connectivitySubscription;
@@ -43,8 +49,17 @@ class _MainScreenState extends State<MainScreen> {
     connectivitySubscription = connectivity.onConnectivityChanged.listen(
       updateConnectionStatus,
     );
+    loadCurrentSession();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _trackCurrentScreen('init_state');
+    });
+  }
+
+  Future<void> loadCurrentSession() async {
+    final session = await AuthService.getStoredSession();
+    if (!mounted) return;
+    setState(() {
+      currentSession = session;
     });
   }
 
@@ -168,6 +183,113 @@ class _MainScreenState extends State<MainScreen> {
         'previous_main_tab_index': previousIndex,
       },
     );
+  }
+
+  String get currentUserName {
+    final name = currentSession?.name.trim() ?? '';
+    if (name.isNotEmpty) return name;
+    final email = currentSession?.email.trim() ?? '';
+    if (email.contains('@')) {
+      return email.split('@').first;
+    }
+    return 'Cloud User';
+  }
+
+  String get currentUserEmail =>
+      currentSession?.email.trim() ?? 'No email found';
+
+  Future<void> promptLogoutAndExit() async {
+    if (isExitProcessing) return;
+
+    final shouldExit =
+        await showGeneralDialog<bool>(
+          context: context,
+          barrierDismissible: true,
+          barrierLabel: 'Exit FLOWGNIMAG',
+          barrierColor: Colors.black.withValues(alpha: 0.55),
+          transitionDuration: const Duration(milliseconds: 240),
+          pageBuilder: (context, animation, secondaryAnimation) {
+            return _ExitDialog(
+              userName: currentUserName,
+              userEmail: currentUserEmail,
+              isProcessing: isExitProcessing,
+            );
+          },
+          transitionBuilder: (context, animation, secondaryAnimation, child) {
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic,
+            );
+            return FadeTransition(
+              opacity: curved,
+              child: ScaleTransition(
+                scale: Tween(begin: 0.92, end: 1.0).animate(curved),
+                child: child,
+              ),
+            );
+          },
+        ) ??
+        false;
+
+    if (!shouldExit) return;
+
+    if (mounted) {
+      setState(() => isExitProcessing = true);
+    }
+
+    try {
+      await PulseIQService.track('exit_confirmed', {
+        'screen_name': getAnalyticsScreenName(),
+        'user_email': currentUserEmail,
+      });
+      await AuthService.logout(currentSession);
+      await PulseIQService.clearIdentity();
+      await PulseIQService.track('page_view', {
+        'screen_name': 'AuthScreen',
+        'trigger': 'logout_exit',
+      });
+    } finally {
+      await SystemNavigator.pop();
+      if (mounted) {
+        setState(() => isExitProcessing = false);
+      }
+    }
+  }
+
+  Future<bool> handleBackPress() async {
+    if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
+      Navigator.of(context).pop();
+      return false;
+    }
+
+    await promptLogoutAndExit();
+    return false;
+  }
+
+  Future<void> logoutToAuthScreen() async {
+    if (isExitProcessing) return;
+    setState(() => isExitProcessing = true);
+    try {
+      await PulseIQService.track('logout_button_click', {
+        'screen_name': getAnalyticsScreenName(),
+        'user_email': currentUserEmail,
+      });
+      await AuthService.logout(currentSession);
+      await PulseIQService.clearIdentity();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: 'AuthScreen'),
+          builder: (_) => AuthScreen(toggleTheme: widget.toggleTheme),
+        ),
+        (route) => false,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => isExitProcessing = false);
+      }
+    }
   }
 
   String getConnectionText() {
@@ -310,8 +432,30 @@ class _MainScreenState extends State<MainScreen> {
                   "FLOWGNIMAG",
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
                 ),
+                const SizedBox(height: 6),
+                Text(
+                  currentUserName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  currentUserEmail,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+                ),
               ],
             ),
+          ),
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: isExitProcessing ? null : logoutToAuthScreen,
+            icon: const Icon(Icons.logout_rounded),
           ),
         ],
       ),
@@ -323,104 +467,212 @@ class _MainScreenState extends State<MainScreen> {
     resetVoiceTrigger();
     final screens = buildScreens();
 
-    return GradientScaffoldBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBody: true,
-        appBar: AppBar(
-          title: Text(
-            getScreenTitle(),
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: Center(child: buildConnectionBadge()),
-            ),
-          ],
-        ),
-        drawer: Drawer(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await handleBackPress();
+      },
+      child: GradientScaffoldBackground(
+        child: Scaffold(
+          key: _scaffoldKey,
           backgroundColor: Colors.transparent,
-          elevation: 0,
-          child: GradientScaffoldBackground(
-            child: SafeArea(
-              child: Column(
-                children: [
-                  buildDrawerHeader(),
-                  buildDrawerItem(
-                    icon: Icons.home_outlined,
-                    title: "Home",
-                    index: 0,
-                  ),
-                  buildDrawerItem(
-                    icon: Icons.smart_toy_outlined,
-                    title: "Assistant",
-                    index: 1,
-                  ),
-                  buildDrawerItem(
-                    icon: Icons.chat_bubble_outline,
-                    title: "Chat",
-                    index: 2,
-                  ),
-                  if (currentIndex == 2)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      child: GlassPanel(
-                        borderRadius: BorderRadius.circular(18),
-                        opacity: 0.16,
-                        child: ListTile(
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          leading: Icon(
-                            Icons.history_rounded,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                          title: Text(
-                            "Chat History",
-                            style: TextStyle(
-                              fontWeight: FontWeight.w700,
+          extendBody: true,
+          appBar: AppBar(
+            title: Text(
+              getScreenTitle(),
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Center(child: buildConnectionBadge()),
+              ),
+            ],
+          ),
+          drawer: Drawer(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: GradientScaffoldBackground(
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    buildDrawerHeader(),
+                    buildDrawerItem(
+                      icon: Icons.home_outlined,
+                      title: "Home",
+                      index: 0,
+                    ),
+                    buildDrawerItem(
+                      icon: Icons.smart_toy_outlined,
+                      title: "Assistant",
+                      index: 1,
+                    ),
+                    buildDrawerItem(
+                      icon: Icons.chat_bubble_outline,
+                      title: "Chat",
+                      index: 2,
+                    ),
+                    if (currentIndex == 2)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        child: GlassPanel(
+                          borderRadius: BorderRadius.circular(18),
+                          opacity: 0.16,
+                          child: ListTile(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            leading: Icon(
+                              Icons.history_rounded,
                               color: Theme.of(context).colorScheme.primary,
                             ),
+                            title: Text(
+                              "Chat History",
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                            onTap: openChatHistory,
                           ),
-                          onTap: openChatHistory,
                         ),
                       ),
+                    buildDrawerItem(
+                      icon: Icons.note_alt_outlined,
+                      title: "Notes",
+                      index: 3,
                     ),
-                  buildDrawerItem(
-                    icon: Icons.note_alt_outlined,
-                    title: "Notes",
-                    index: 3,
+                    buildDrawerItem(
+                      icon: Icons.check_circle_outline,
+                      title: "Tasks",
+                      index: 4,
+                    ),
+                    buildDrawerItem(
+                      icon: Icons.settings_outlined,
+                      title: "Settings",
+                      index: 5,
+                    ),
+                    const Spacer(),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          body: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 350),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: KeyedSubtree(
+              key: ValueKey(currentIndex),
+              child: screens[currentIndex],
+            ),
+          ),
+          bottomNavigationBar: null,
+        ),
+      ),
+    );
+  }
+}
+
+class _ExitDialog extends StatelessWidget {
+  final String userName;
+  final String userEmail;
+  final bool isProcessing;
+
+  const _ExitDialog({
+    required this.userName,
+    required this.userEmail,
+    required this.isProcessing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: GlassPanel(
+            padding: const EdgeInsets.all(24),
+            borderRadius: BorderRadius.circular(28),
+            opacity: 0.22,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(18),
+                          gradient: LinearGradient(
+                            colors: [AppTheme.accent, AppTheme.primary],
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.logout_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(
+                          'Logout and exit?',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                    ],
                   ),
-                  buildDrawerItem(
-                    icon: Icons.check_circle_outline,
-                    title: "Tasks",
-                    index: 4,
+                  const SizedBox(height: 14),
+                  Text(
+                    'Current user: $userName\nEmail: $userEmail\n\nIf you exit now, the app will log this account out properly before closing.',
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: AppTheme.textMuted(context),
+                    ),
                   ),
-                  buildDrawerItem(
-                    icon: Icons.settings_outlined,
-                    title: "Settings",
-                    index: 5,
+                  const SizedBox(height: 22),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: isProcessing
+                              ? null
+                              : () => Navigator.of(context).pop(false),
+                          child: const Text('Stay'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: isProcessing
+                              ? null
+                              : () => Navigator.of(context).pop(true),
+                          child: isProcessing
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.2,
+                                  ),
+                                )
+                              : const Text('Logout & Exit'),
+                        ),
+                      ),
+                    ],
                   ),
-                  const Spacer(),
                 ],
               ),
             ),
           ),
         ),
-        body: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 350),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          child: KeyedSubtree(
-            key: ValueKey(currentIndex),
-            child: screens[currentIndex],
-          ),
-        ),
-        bottomNavigationBar: null,
       ),
     );
   }
