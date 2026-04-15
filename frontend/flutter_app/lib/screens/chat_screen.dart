@@ -2449,9 +2449,24 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
+    final tempId = 'img_loading_${DateTime.now().microsecondsSinceEpoch}';
     setState(() {
       isGeneratingImage = true;
+      messages.add({
+        'id': tempId,
+        'role': 'ai',
+        'text': 'Generating image...',
+        'time': DateTime.now().toIso8601String(),
+        'type': 'generated_image_loading',
+        'code': '',
+        'imagePrompt': prompt,
+        'action': '',
+        'url': '',
+        'info': '',
+        'starred': false,
+      });
     });
+    scrollToBottom();
 
     try {
       final response = await _postJsonWithRetry('/generate-image', {
@@ -2470,11 +2485,15 @@ class _ChatScreenState extends State<ChatScreen> {
         final imageDataUrl = (data['imageDataUrl'] ?? '').toString();
 
         if (imageDataUrl.trim().isEmpty) {
+          setState(() {
+            messages.removeWhere((msg) => (msg['id'] ?? '').toString() == tempId);
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Image data missing in response.')),
           );
         } else {
           setState(() {
+            messages.removeWhere((msg) => (msg['id'] ?? '').toString() == tempId);
             messages.add({
               'role': 'ai',
               'text': 'Image generated successfully.',
@@ -2493,6 +2512,9 @@ class _ChatScreenState extends State<ChatScreen> {
           scrollToBottom();
         }
       } else {
+        setState(() {
+          messages.removeWhere((msg) => (msg['id'] ?? '').toString() == tempId);
+        });
         final errorText = _attachRequestId(
           '${data['error'] ?? 'Image generation failed'}\n${data['details'] ?? ''}'
               .trim(),
@@ -2507,6 +2529,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) {
         return;
       }
+      setState(() {
+        messages.removeWhere((msg) => (msg['id'] ?? '').toString() == tempId);
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not generate image.')),
       );
@@ -4188,8 +4213,14 @@ class _ChatScreenState extends State<ChatScreen> {
   void scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 110), () {
       if (scrollController.hasClients) {
+        double targetExtent = 0;
+        for (final position in scrollController.positions) {
+          if (position.maxScrollExtent > targetExtent) {
+            targetExtent = position.maxScrollExtent;
+          }
+        }
         scrollController.animateTo(
-          scrollController.position.maxScrollExtent,
+          targetExtent,
           duration: const Duration(milliseconds: 360),
           curve: Curves.easeOutCubic,
         );
@@ -5307,6 +5338,39 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     } else if (!isUser && type == 'generated_image') {
       bubbleContent = buildGeneratedImageCard(text, imagePrompt, url);
+    } else if (!isUser && type == 'generated_image_loading') {
+      bubbleContent = GlassPanel(
+        padding: const EdgeInsets.all(14),
+        borderRadius: BorderRadius.circular(20),
+        opacity: 0.12,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  text.isEmpty ? 'Generating image...' : text,
+                  style: TextStyle(color: AppTheme.textMuted(context)),
+                ),
+              ],
+            ),
+            if (imagePrompt.trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                imagePrompt,
+                style: TextStyle(color: AppTheme.textMuted(context), height: 1.4),
+              ),
+            ],
+          ],
+        ),
+      );
     } else if (!isUser && type == 'video' && videoPrompt.trim().isNotEmpty) {
       bubbleContent = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -6026,7 +6090,7 @@ class _ChatScreenState extends State<ChatScreen> {
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 280),
             child: KeyedSubtree(
-              key: ValueKey('${currentSessionId}_${messages.length}'),
+              key: ValueKey(currentSessionId),
               child: buildChatTimeline(),
             ),
           ),
