@@ -1,0 +1,6 @@
+[build]
+  command = "if [ ! -d \"$HOME/flutter\" ]; then git clone https://github.com/flutter/flutter.git --depth 1 -b stable $HOME/flutter; else git -C $HOME/flutter fetch --depth 1 origin stable && git -C $HOME/flutter checkout stable && git -C $HOME/flutter reset --hard origin/stable; fi && export PATH=\"$PATH:$HOME/flutter/bin\" && flutter --version && flutter pub get && flutter build web --release && cp web/_redirects build/web/_redirects"
+  publish = "build/web"
+
+[build.environment]
+  FLUTTER_VERSION = "stable"
