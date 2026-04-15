@@ -1,12 +1,17 @@
 import "dart:convert";
 import "dart:math";
 import "package:flutter/material.dart";
+import "package:flutter_dotenv/flutter_dotenv.dart";
 import "package:http/http.dart" as http;
 import "package:shared_preferences/shared_preferences.dart";
 
 class PulseIQService {
-  // Pass via --dart-define=PULSEIQ_API_KEY=pk_xxx
-  static const apiKey = String.fromEnvironment("PULSEIQ_API_KEY");
+  // Uses frontend .env first, then optional --dart-define fallback.
+  static String get apiKey {
+    final fromDotEnv = dotenv.isInitialized ? (dotenv.env["PULSEIQ_API_KEY"] ?? "") : "";
+    if (fromDotEnv.trim().isNotEmpty) return fromDotEnv.trim();
+    return const String.fromEnvironment("PULSEIQ_API_KEY").trim();
+  }
   static const projectId = "69df19cc38dc659061ae9a3d";
   static const endpoint = "https://pulseiq-ffio.onrender.com/api/ingest/event";
 

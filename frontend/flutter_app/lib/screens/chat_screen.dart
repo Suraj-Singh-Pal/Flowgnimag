@@ -16,6 +16,7 @@ import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../config/backend_config.dart';
 import '../theme/app_theme.dart';
 import '../theme/glass.dart';
 
@@ -167,14 +168,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String get apiBaseUrl {
-    const fromEnv = String.fromEnvironment('API_BASE_URL');
-    if (fromEnv.isNotEmpty) {
-      return fromEnv;
-    }
-    if (kIsWeb) {
-      return 'http://localhost:5000';
-    }
-    return 'http://10.0.2.2:5000';
+    return BackendConfig.apiBaseUrl;
   }
 
   Future<void> initData() async {

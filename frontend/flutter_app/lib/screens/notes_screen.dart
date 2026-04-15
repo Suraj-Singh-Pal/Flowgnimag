@@ -1,8 +1,8 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/backend_config.dart';
 
 class NotesScreen extends StatefulWidget {
   const NotesScreen({super.key});
@@ -24,10 +24,7 @@ class _NotesScreenState extends State<NotesScreen> {
   String cloudToken = '';
 
   String get apiBaseUrl {
-    const fromEnv = String.fromEnvironment('API_BASE_URL');
-    if (fromEnv.isNotEmpty) return fromEnv;
-    if (kIsWeb) return 'http://localhost:5000';
-    return 'http://10.0.2.2:5000';
+    return BackendConfig.apiBaseUrl;
   }
 
   bool get isCloudConnected => cloudToken.trim().isNotEmpty;

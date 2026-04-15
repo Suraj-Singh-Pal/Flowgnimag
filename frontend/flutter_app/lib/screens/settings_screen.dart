@@ -7,6 +7,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../config/backend_config.dart';
 import '../services/pulseiq_service.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -64,14 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<Map<String, dynamic>> googleContacts = [];
 
   String get apiBaseUrl {
-    const fromEnv = String.fromEnvironment('API_BASE_URL');
-    if (fromEnv.isNotEmpty) {
-      return fromEnv;
-    }
-    if (kIsWeb) {
-      return 'http://localhost:5000';
-    }
-    return 'http://10.0.2.2:5000';
+    return BackendConfig.apiBaseUrl;
   }
 
   bool get isCloudConnected => cloudToken.trim().isNotEmpty;

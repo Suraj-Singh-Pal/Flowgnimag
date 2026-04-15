@@ -7,6 +7,7 @@
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
     "test": "node --test tests/*.test.js",
+    "db:migrate:mongo": "node scripts/migrate-sqlite-to-mongodb.js",
     "push:check": "node scripts/push-readiness-check.js",
     "push:env:from-sa": "node scripts/import-firebase-service-account.js",
     "push:bootstrap": "node scripts/bootstrap-push-setup.js"
@@ -18,10 +19,12 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.8.0",
     "cors": "^2.8.6",
-    "dotenv": "^17.3.1",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "firebase-admin": "^13.6.0",
     "jsonwebtoken": "^9.0.3",
+    "mongodb": "^6.17.0",
+    "mongoose": "^9.4.1",
     "openai": "^6.32.0"
   },
   "devDependencies": {

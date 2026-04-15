@@ -5,7 +5,9 @@ const OpenAI = require("openai");
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const dns = require("dns").promises;
 const Database = require("better-sqlite3");
+const { MongoClient } = require("mongodb");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 let firebaseAdmin = null;
@@ -220,6 +222,10 @@ const REFRESH_TOKEN_EXPIRES_DAYS = Number(
 );
 const DB_PATH =
   process.env.DB_PATH || path.join(process.cwd(), "data", "flowgnimag.db");
+const MONGODB_URI = process.env.MONGODB_URI || "";
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || "";
+const MONGODB_RUNTIME_MODE =
+  (process.env.MONGODB_RUNTIME_MODE || "sqlite").trim().toLowerCase();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_OAUTH_REDIRECT_URI = process.env.GOOGLE_OAUTH_REDIRECT_URI || "";
@@ -245,12 +251,241 @@ const ALLOW_FAKE_FCM_FOR_TESTS =
   process.env.ALLOW_FAKE_FCM_FOR_TESTS === "1";
 
 let db = null;
+let mongoClient = null;
+let mongoDb = null;
+let mongoMirrorSyncInProgress = false;
+let mongoMirrorBootstrapComplete = false;
+let mongoMirrorLastSyncAt = "";
+let mongoMirrorSyncQueued = false;
+let mongoMirrorSyncTimer = null;
 let firebaseMessaging = null;
 let googlePushIntervalRef = null;
+
+const SQLITE_MIRROR_TABLES = [
+  "users",
+  "chat_sessions",
+  "chat_messages",
+  "notes",
+  "tasks",
+  "user_memories",
+  "google_oauth_states",
+  "google_calendar_tokens",
+  "push_devices",
+  "google_push_state",
+  "auth_refresh_tokens",
+  "knowledge_documents",
+  "assistant_jobs",
+];
 
 function ensureDbDirectory() {
   const dir = path.dirname(DB_PATH);
   require("fs").mkdirSync(dir, { recursive: true });
+}
+
+function parseMongoDbName() {
+  if (MONGODB_DB_NAME.trim()) {
+    return MONGODB_DB_NAME.trim();
+  }
+  if (!MONGODB_URI.trim()) {
+    return "flowgnimag";
+  }
+  try {
+    const uri = new URL(MONGODB_URI);
+    const pathname = (uri.pathname || "").replace(/^\//, "").trim();
+    if (pathname) return pathname;
+  } catch {}
+  return "flowgnimag";
+}
+
+function redactMongoUri(uri = "") {
+  if (!uri || typeof uri !== "string") return "";
+  return uri.replace(/\/\/([^:@\/]+):([^@\/]+)@/g, "//$1:***@");
+}
+
+function parseMongoHostFromUri(uri = "") {
+  if (!uri || typeof uri !== "string") return "";
+  const trimmed = uri.trim();
+  if (!trimmed.startsWith("mongodb+srv://")) return "";
+  const noScheme = trimmed.replace("mongodb+srv://", "");
+  const afterCreds = noScheme.includes("@") ? noScheme.split("@")[1] : noScheme;
+  const host = afterCreds.split("/")[0] || "";
+  return host.trim();
+}
+
+async function initializeMongo() {
+  if (!MONGODB_URI.trim()) return false;
+  if (mongoDb) return true;
+  try {
+    mongoClient = new MongoClient(MONGODB_URI, {
+      maxPoolSize: 10,
+      minPoolSize: 0,
+      serverSelectionTimeoutMS: 10000,
+    });
+    await mongoClient.connect();
+    mongoDb = mongoClient.db(parseMongoDbName());
+    return true;
+  } catch (error) {
+    console.error("Mongo initialization failed:", error?.message);
+    mongoDb = null;
+    if (mongoClient) {
+      try {
+        await mongoClient.close();
+      } catch {}
+    }
+    mongoClient = null;
+    return false;
+  }
+}
+
+function isMongoMirrorModeEnabled() {
+  return (
+    MONGODB_RUNTIME_MODE === "mirror" &&
+    Boolean(mongoDb) &&
+    Boolean(db)
+  );
+}
+
+function sqliteTableExists(table) {
+  const row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
+    )
+    .get(table);
+  return Boolean(row?.name);
+}
+
+function getSqliteTableColumns(table) {
+  if (!sqliteTableExists(table)) return [];
+  return db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((row) => String(row.name || ""))
+    .filter((name) => name.length > 0);
+}
+
+async function syncSqliteTableToMongo(table) {
+  if (!mongoDb || !db || !sqliteTableExists(table)) return;
+  const rows = db.prepare(`SELECT * FROM ${table}`).all();
+  const collection = mongoDb.collection(table);
+  await collection.deleteMany({});
+  if (rows.length > 0) {
+    await collection.insertMany(rows, { ordered: false });
+  }
+}
+
+async function syncSqliteToMongo({ force = false } = {}) {
+  if (!isMongoMirrorModeEnabled()) return false;
+  if (mongoMirrorSyncInProgress && !force) return false;
+  mongoMirrorSyncInProgress = true;
+  try {
+    for (const table of SQLITE_MIRROR_TABLES) {
+      await syncSqliteTableToMongo(table);
+    }
+    mongoMirrorLastSyncAt = nowIso();
+    return true;
+  } catch (error) {
+    console.error("Mongo mirror sync failed:", error?.message);
+    return false;
+  } finally {
+    mongoMirrorSyncInProgress = false;
+  }
+}
+
+function sanitizeMongoRowsForSqlite(table, rows) {
+  const columns = new Set(getSqliteTableColumns(table));
+  return rows.map((row) => {
+    const next = {};
+    for (const [key, value] of Object.entries(row || {})) {
+      if (key === "_id") continue;
+      if (!columns.has(key)) continue;
+      next[key] = value;
+    }
+    return next;
+  });
+}
+
+function replaceSqliteTableData(table, rows) {
+  if (!sqliteTableExists(table)) return;
+  const columns = getSqliteTableColumns(table);
+  if (columns.length === 0) return;
+
+  db.prepare(`DELETE FROM ${table}`).run();
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  const validRows = sanitizeMongoRowsForSqlite(table, rows);
+  if (validRows.length === 0) return;
+
+  const insertColumns = columns.filter((col) =>
+    Object.prototype.hasOwnProperty.call(validRows[0], col)
+  );
+  if (insertColumns.length === 0) return;
+
+  const placeholders = insertColumns.map(() => "?").join(",");
+  const sql = `INSERT INTO ${table} (${insertColumns.join(",")}) VALUES (${placeholders})`;
+  const stmt = db.prepare(sql);
+  const tx = db.transaction((payload) => {
+    for (const row of payload) {
+      const values = insertColumns.map((col) => row[col]);
+      stmt.run(...values);
+    }
+  });
+  tx(validRows);
+}
+
+async function restoreMongoIntoSqlite() {
+  if (!isMongoMirrorModeEnabled()) return false;
+  try {
+    for (const table of SQLITE_MIRROR_TABLES) {
+      if (!sqliteTableExists(table)) continue;
+      const rows = await mongoDb
+        .collection(table)
+        .find({}, { projection: { _id: 0 } })
+        .toArray();
+      replaceSqliteTableData(table, rows);
+    }
+    return true;
+  } catch (error) {
+    console.error("Mongo restore into sqlite failed:", error?.message);
+    return false;
+  }
+}
+
+async function bootstrapMongoMirror() {
+  if (!isMongoMirrorModeEnabled()) return false;
+  try {
+    let mongoTotal = 0;
+    for (const table of SQLITE_MIRROR_TABLES) {
+      const count = await mongoDb.collection(table).countDocuments();
+      mongoTotal += count;
+      if (mongoTotal > 0) break;
+    }
+
+    if (mongoTotal > 0) {
+      await restoreMongoIntoSqlite();
+      mongoMirrorLastSyncAt = nowIso();
+      mongoMirrorBootstrapComplete = true;
+      return true;
+    }
+
+    await syncSqliteToMongo({ force: true });
+    mongoMirrorBootstrapComplete = true;
+    return true;
+  } catch (error) {
+    console.error("Mongo mirror bootstrap failed:", error?.message);
+    return false;
+  }
+}
+
+function scheduleMongoMirrorSync() {
+  if (!isMongoMirrorModeEnabled()) return;
+  mongoMirrorSyncQueued = true;
+  if (mongoMirrorSyncTimer) return;
+  mongoMirrorSyncTimer = setTimeout(async () => {
+    mongoMirrorSyncTimer = null;
+    if (!mongoMirrorSyncQueued) return;
+    mongoMirrorSyncQueued = false;
+    await syncSqliteToMongo();
+  }, 350);
 }
 
 function initializeDatabase() {
@@ -2021,6 +2256,30 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
+  if (!isMongoMirrorModeEnabled()) {
+    return next();
+  }
+
+  const shouldWatchWrite =
+    req.method === "POST" ||
+    req.method === "PUT" ||
+    req.method === "PATCH" ||
+    req.method === "DELETE";
+
+  if (!shouldWatchWrite) {
+    return next();
+  }
+
+  res.on("finish", () => {
+    if (res.statusCode >= 400) return;
+    if (req.path === "/metrics" || req.path === "/health") return;
+    scheduleMongoMirrorSync();
+  });
+
+  next();
+});
+
+app.use((req, res, next) => {
   if (!RATE_LIMIT_PATHS.has(req.path)) {
     return next();
   }
@@ -2051,6 +2310,14 @@ app.use((req, res, next) => {
 });
 
 initializeDatabase();
+initializeMongo().catch((error) => {
+  console.error("Mongo bootstrap failed:", error?.message);
+});
+setTimeout(() => {
+  bootstrapMongoMirror().catch((error) => {
+    console.error("Mongo mirror bootstrap failed:", error?.message);
+  });
+}, 300);
 initializeFirebaseAdmin();
 startGooglePushScheduler();
 
@@ -4640,6 +4907,9 @@ app.get("/health", (req, res) => {
     database: {
       connected: Boolean(db),
       path: DB_PATH,
+      provider: "sqlite",
+      mongodbConnected: Boolean(mongoDb),
+      mongodbDatabase: mongoDb ? parseMongoDbName() : "",
     },
     providers: {
       openai: Boolean(process.env.OPENAI_API_KEY),
@@ -4657,6 +4927,136 @@ app.get("/metrics", (req, res) => {
     uptimeSeconds: Math.round(process.uptime()),
     activeRateLimitBuckets: rateBuckets.size,
   });
+});
+
+app.get("/db/status", (req, res) => {
+  const usingMongo = Boolean(MONGODB_URI.trim());
+  const mirrorMode = MONGODB_RUNTIME_MODE === "mirror";
+  const activeProvider =
+    usingMongo && mirrorMode && Boolean(mongoDb) ? "mongodb_mirror" : "sqlite";
+  return res.json({
+    success: true,
+    runtimeMode: MONGODB_RUNTIME_MODE,
+    sqlite: {
+      enabled: true,
+      connected: Boolean(db),
+      path: DB_PATH,
+    },
+    mongodb: {
+      configured: usingMongo,
+      connected: Boolean(mongoDb),
+      database: usingMongo ? parseMongoDbName() : "",
+      mirrorBootstrapComplete: mongoMirrorBootstrapComplete,
+      mirrorSyncInProgress: mongoMirrorSyncInProgress,
+      mirrorLastSyncAt: mongoMirrorLastSyncAt || null,
+    },
+    activeProvider,
+    note:
+      activeProvider === "mongodb_mirror"
+        ? "Mirror mode active: reads run via SQLite compatibility layer, while data is auto-synced to MongoDB Atlas."
+        : "Backend is currently SQLite-driven. Set MONGODB_RUNTIME_MODE=mirror with valid MongoDB credentials to enable Atlas mirror persistence.",
+  });
+});
+
+app.get("/db/diagnostics", async (req, res) => {
+  const diagnostics = {
+    success: true,
+    generatedAt: nowIso(),
+    runtimeMode: MONGODB_RUNTIME_MODE,
+    sqlite: {
+      connected: Boolean(db),
+      path: DB_PATH,
+    },
+    mongodb: {
+      configured: Boolean(MONGODB_URI.trim()),
+      connected: Boolean(mongoDb),
+      database: MONGODB_URI.trim() ? parseMongoDbName() : "",
+      uriPreview: redactMongoUri(MONGODB_URI),
+      host: parseMongoHostFromUri(MONGODB_URI),
+      mirrorBootstrapComplete: mongoMirrorBootstrapComplete,
+      mirrorLastSyncAt: mongoMirrorLastSyncAt || null,
+    },
+    checks: [],
+    suggestions: [],
+  };
+
+  if (!MONGODB_URI.trim()) {
+    diagnostics.success = false;
+    diagnostics.checks.push({
+      name: "env.missing_mongodb_uri",
+      ok: false,
+      details: "MONGODB_URI is empty.",
+    });
+    diagnostics.suggestions.push(
+      "Set MONGODB_URI in backend/.env and restart backend."
+    );
+    return res.status(400).json(diagnostics);
+  }
+
+  const host = parseMongoHostFromUri(MONGODB_URI);
+  if (host) {
+    try {
+      const srv = await dns.resolveSrv(`_mongodb._tcp.${host}`);
+      diagnostics.checks.push({
+        name: "dns.srv_lookup",
+        ok: Array.isArray(srv) && srv.length > 0,
+        details: `Found ${srv.length} SRV records`,
+      });
+    } catch (error) {
+      diagnostics.checks.push({
+        name: "dns.srv_lookup",
+        ok: false,
+        details: error?.message || "SRV lookup failed",
+      });
+      diagnostics.suggestions.push(
+        "Internet/DNS issue ho sakta hai. Network check karo and try again."
+      );
+    }
+  }
+
+  try {
+    if (mongoDb) {
+      await mongoDb.command({ ping: 1 });
+      diagnostics.checks.push({
+        name: "mongodb.ping_existing_client",
+        ok: true,
+        details: "Existing Mongo connection is healthy.",
+      });
+      return res.json(diagnostics);
+    }
+
+    const probeClient = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 12_000,
+    });
+    await probeClient.connect();
+    await probeClient.db(parseMongoDbName()).command({ ping: 1 });
+    await probeClient.close();
+    diagnostics.checks.push({
+      name: "mongodb.probe_connection",
+      ok: true,
+      details: "Successfully connected and pinged Atlas.",
+    });
+    return res.json(diagnostics);
+  } catch (error) {
+    diagnostics.success = false;
+    diagnostics.checks.push({
+      name: "mongodb.probe_connection",
+      ok: false,
+      details: error?.message || "Mongo connection failed",
+      errorName: error?.name || "",
+      errorCode: error?.code || "",
+    });
+    diagnostics.suggestions.push(
+      "Atlas Network Access me current IP allow karo (temporary 0.0.0.0/0 for testing)."
+    );
+    diagnostics.suggestions.push(
+      "Atlas DB user/password verify karo and URI credentials recheck karo."
+    );
+    diagnostics.suggestions.push(
+      "Cluster paused nahi hona chahiye; Atlas cluster status check karo."
+    );
+    return res.status(500).json(diagnostics);
+  }
 });
 
 app.get("/project/status", (req, res) => {
